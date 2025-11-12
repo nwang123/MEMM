@@ -55,64 +55,9 @@ The MEMM framework addresses the challenges of high-dimensional mediation analys
 The \code{simulate_data} function generates realistic multivariate data with specified mediation structures. The \code{optimize_weights} function implements the core ADMM algorithm. The \code{cv_select_lambda} function performs cross-validation for parameter tuning, and \code{run_simulation_with_cv} provides a complete simulation workflow with performance evaluation.
 }
 \value{
-\code{simulate_data} returns a list containing:
-\item{X}{Simulated exposure matrix}
-\item{M}{Simulated mediator matrix} 
-\item{Y}{Simulated outcome vector}
-\item{active_expos}{Indices of active exposures}
-\item{active_mediators}{Indices of active mediators}
-\item{true_alpha}{True alpha matrix (exposure-mediator effects)}
-\item{true_gamma}{True gamma vector (direct exposure-outcome effects)}
-\item{true_eta}{True eta vector (mediator-outcome effects)}
 
-\code{optimize_weights} returns a list with:
-\item{a}{Estimated exposure weights}
-\item{b}{Estimated mediator weights}
-
-\code{cv_select_lambda} returns a list with:
-\item{best_lambda_a}{Optimal lambda_a value}
-\item{best_lambda_b}{Optimal lambda_b value}
-\item{cv_error_grid}{Cross-validation error matrix}
-
-\code{run_simulation_with_cv} returns a data frame with performance metrics for each simulation run:
-\item{MP}{Mediation proportion estimate}
-\item{Accuracy}{Variable selection accuracy}
-\item{Precision}{Variable selection precision}
-\item{Recall}{Variable selection recall}
-\item{F1}{F1-score for variable selection}
 }
 \examples{
-# Load required packages
-library(MASS)
-library(Matrix)
-
-# Run a small simulation study
-\donttest{
-results <- run_simulation_with_cv(n_runs = 3, n1 = 50, m = 10, q = 8, q_a = 2, r = 2,
-                                 pathway = "partial", lambda_n = 1,
-                                 lambda_a_seq = c(0, 0.1), lambda_b_seq = c(0, 0.1),
-                                 K = 3)
-                                 
-# View average performance metrics
-colMeans(results)
-}
-
-# Simulate data and fit model separately
-\donttest{
-data <- simulate_data(n1 = 100, m = 15, q = 10, q_a = 3, r = 3, 
-                     pathway = "complete", rhoX = 0.2, rhoM = 0.3)
-
-# Perform cross-validation
-cv_result <- cv_select_lambda(data$X, data$M, data$Y, lambda_n = 1,
-                             lambda_a_seq = c(0, 0.1, 0.2), 
-                             lambda_b_seq = c(0, 0.1, 0.2), K = 5)
-
-# Fit final model with selected parameters
-model <- optimize_weights(data$X, data$M, data$Y,
-                         lambda_n = 1, 
-                         lambda_a = cv_result$best_lambda_a,
-                         lambda_b = cv_result$best_lambda_b)
-}
 }
 \seealso{
 Useful links:
