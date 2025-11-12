@@ -39,7 +39,11 @@ library(MEMM)
 
 Output 
 ===========
-The main output of our tool is a list of pathways and genes with p-values from likelihood ratio test for their association with the phenotype of interest. These findings could offer more reliable and interpretable results for TWAS analyses. 
+Returns a comprehensive summary list including:
+	•	sim_data: data generated in the current replicate;
+	•	lambda_a, lambda_b: selected tuning parameters;
+	•	fit: ADMM fitting results (a_est, b_est);
+	•	metrics: numerical performance (Bias, Precision, Recall, F1, Mediation Proportion).
 
 Development
 ===========
