@@ -1,4 +1,4 @@
-### *** simulate_data(
+### *** simulate_data()
 # Purpose: Generates synthetic datasets for mediation analysis, with user-specified correlation structures, pathway mechanisms (complete, partial, or none), and noise levels.
 
 #Key Arguments:
