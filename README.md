@@ -7,41 +7,35 @@ It supports realistic simulation of correlated omics-style data, cross-validated
 
 ## R Code Overview
 
-The `data_simulation.R` script simulates gene expression and SNP data for various experimental conditions. It provides flexibility in setting noise levels, group sizes, and effect sizes.
+The implementation consists of four main functions that together form a complete pipeline for simulation, model estimation, and performance evaluation.
+	1.	simulate_data()
+Generates synthetic exposure–mediator–outcome data under user-specified correlation, noise, and mediation structures.
+It allows for complete, partial, or no mediation pathways by modifying the true parameters (\alpha, \eta, \gamma).
+The function returns standardized matrices X, M, Y and true coefficients for downstream benchmarking.
+	2.	optimize_weights()
+Implements the ADMM-based algorithm to estimate the projection directions a and b under joint LASSO penalties \lambda_a and \lambda_b, with additional penalty \lambda_n for the correlation constraint.
+Iteratively updates primal and dual variables until convergence, returning the estimated a, b.
+	3.	cv_select_lambda()
+Performs K-fold cross-validation over a grid of (\lambda_a, \lambda_b) to minimize the average sum of squared residuals (SSR).
+Outputs the optimal tuning parameters and the full error surface for diagnostic visualization.
+	4.	run_simulation_with_cv()
+Serves as the master wrapper that integrates data generation, cross-validation, ADMM fitting, and performance evaluation (Accuracy, Precision, Recall, F1, and Mediation Proportion).
+Designed for repeated Monte Carlo runs to summarize mean performance across simulation replicates.
 
 Installation
 ===
-To install the TIPS package, you will first need to install devtools package and then execute the following code:
+To install the MEMM package, you will first need to install devtools package and then execute the following code:
 ```
 #install.packages("devtools")
 library(devtools)
-install_github("nwang123/TIPS")
+install_github("nwang123/MEMM")
 ```
 Usage
 ===========
 The following help page will also provide quick references for TIPS package and the example command lines:
 ```
-library(TIPS)
+library(MEMM)
 ```
-Data
-===========
-We need the following inputs: w1: genotype data for reference panel (e.g. GTEx); w2: genotype data for GWAS dataset; y: gene expression data for reference panel (e.g. GTEx); z: phenotype data for GWAS dataset. Additionally, we need the pathway information (e.g. pre-saved pathways from KEGG_MSigDB.RData, Reactome.RData and biocarta.RData under data folder) to group the genes.
-
-Implementation steps
-===========
-1.	We first ran an Expectation-Maximization (EM) algorithm to iteratively estimate model parameters, including gene effects (alpha) and noise variances (sigma1, sigma2, sigmau).
-2.	We then ran k-fold cross-validation to tune regularization parameters (lambda and ‘a’) for the optimal choice.
-3.	Lastly, we performed likelihood ratio tests for each pathway and each gene and outputted the p-values for their association with the phenotype.
-
-We provide one data example from the GTEx heart tissue and GWAS data for SBP from UK Biobank. Since the size of the original GWAS dataset is too large and there is limits to files size on Github, we split it to chunks and provide the first two chunks as example. If you are interested in the complete data file, please refer to wangneng7877@gmail.com.
-```
-library(TIPS)
-data(y_gene_heart_chu1)
-data(w1_heart_chu1)
-data(z_heart)
-```
-w2_heart_chu1 is in.zip file, so the best way to import it is to download the .zip file and unzip it. Then you can import the data in R.
-For running a toy simulation example of our package, please run the data simulation example.R code under example folder. 
 
 Output 
 ===========
