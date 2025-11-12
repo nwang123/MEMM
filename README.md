@@ -7,17 +7,15 @@ It supports realistic simulation of correlated omics-style data, cross-validated
 
 ## R Code Overview
 
-The implementation consists of four main functions that together form a complete pipeline for simulation, model estimation, and performance evaluation.
+The implementation consists of four main functions that together form a complete pipeline for simulation, model estimation, and performance evaluation.\\
 	1.	simulate_data()
 Generates synthetic exposure–mediator–outcome data under user-specified correlation, noise, and mediation structures.
 It allows for complete, partial, or no mediation pathways by modifying the true parameters (\alpha, \eta, \gamma).
-The function returns standardized matrices X, M, Y and true coefficients for downstream benchmarking.
+The function returns standardized matrices X, M, Y and true coefficients for downstream benchmarking.\\
 	2.	optimize_weights()
-Implements the ADMM-based algorithm to estimate the projection directions a and b under joint LASSO penalties \lambda_a and \lambda_b, with additional penalty \lambda_n for the correlation constraint.
-Iteratively updates primal and dual variables until convergence, returning the estimated a, b.
+Implements the ADMM-based algorithm to estimate the projection directions a and b under joint LASSO penalties \lambda_a and \lambda_b, with additional penalty \lambda_n for the correlation constraint. Iteratively updates primal and dual variables until convergence, returning the estimated a, b.\\
 	3.	cv_select_lambda()
-Performs K-fold cross-validation over a grid of (\lambda_a, \lambda_b) to minimize the average sum of squared residuals (SSR).
-Outputs the optimal tuning parameters and the full error surface for diagnostic visualization.
+Performs K-fold cross-validation over a grid of (\lambda_a, \lambda_b) to minimize the average sum of squared residuals (SSR). Outputs the optimal tuning parameters and the full error surface for diagnostic visualization.\\
 	4.	run_simulation_with_cv()
 Serves as the master wrapper that integrates data generation, cross-validation, ADMM fitting, and performance evaluation (Accuracy, Precision, Recall, F1, and Mediation Proportion).
 Designed for repeated Monte Carlo runs to summarize mean performance across simulation replicates.
