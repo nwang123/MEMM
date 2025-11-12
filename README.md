@@ -3,7 +3,7 @@ MEMM
 This R package provides a simulation and estimation framework for high-dimensional multivariate mediation analysis, integrating exposure, mediator, and outcome data through a penalized joint model solved by ADMM (Alternating Direction Method of Multipliers).
 It supports realistic simulation of correlated omics-style data, cross-validated tuning of regularization parameters, and evaluation of mediation performance metrics such as accuracy, precision, recall, F1-score, and estimated mediation proportion (MP).
 
-![Alt text](./Fig1_R1.png)
+![Alt text](./Fig1.png)
 
 ## R Code Overview
 
