@@ -1,3 +1,43 @@
+### *** simulate_data(
+# Purpose: Generates synthetic datasets for mediation analysis, with user-specified correlation structures, pathway mechanisms (complete, partial, or none), and noise levels.
+
+#Key Arguments:
+#	•	n1: sample size
+#	•	m: number of exposures
+#	•	q: number of mediators
+#	•	q_a: number of active mediators
+#	•	r: number of active exposures
+#	•	rhoX, rhoM: correlation parameters for exposures and mediators
+#	•	sigma1, sigma2: scaling factors for mediator and outcome noise
+#	•	pathway: "complete", "partial", or "none" — determines the causal structure
+
+#Returns: A list containing standardized X, M, Y, and the true parameter matrices (alpha, eta, gamma).
+
+### *** optimize_weights()
+# Purpose: Implements the ADMM algorithm to jointly estimate the projection directions a (exposure combination) and b (mediator combination), incorporating sparsity-inducing LASSO penalties.
+
+#Key Features:
+#	•	Iterative updates of a and b under normalization constraints
+#	•	Soft-thresholding for L1 regularization
+#	•	Convergence based on Euclidean norm tolerance
+
+# Key Arguments: lambda_n: nonlinear penalty parameter; lambda_a, lambda_b: LASSO regularization strengths.
+# Returns: A list with estimated projection vectors a and b.
+
+### *** cv_select_lambda()
+# Purpose: Performs K-fold cross-validation to select optimal regularization parameters (lambda_a, lambda_b) that minimize the prediction residual sum of squares (RSS).
+
+# Returns: Best values of lambda_a and lambda_b, and a full grid of cross-validated errors.
+
+### ***  run_simulation_with_cv()
+# Purpose: Wrapper function that automates:
+#	1.	Data simulation via simulate_data()
+#	2.	Cross-validation of tuning parameters via cv_select_lambda()
+#	3.	Model estimation via optimize_weights()
+#	4.	Performance evaluation (Accuracy, Precision, Recall, F1, estimated MP)
+# Outputs: A data frame summarizing metrics across replications, plus printed averages.
+
+
 ###############################################################################
 # Load required package for multivariate normal simulation
 ###############################################################################
