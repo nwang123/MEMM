@@ -1,79 +1,58 @@
-# Load required packages
-library(MASS)   # For multivariate normal generation
-library(glmnet) # For LASSO-like operations if needed
+###############################################################################
 
-#--- 1. Simulate data --------------------------------------------------------
-set.seed(123)
+# Reproduce main-text Table 1: Complete mediation, sigma_Y^2 = 1
 
-sim_data <- simulate_data(
-  n1 = 100,    # Sample size
-  m = 10,      # Number of exposures
-  q = 8,       # Number of mediators
-  q_a = 3,     # Number of active mediators
-  r = 2,       # Number of active exposures
-  rhoX = 0.3,  # Correlation among exposures
-  rhoM = 0.3,  # Correlation among mediators
-  sigma1 = 1,  # Noise scale for mediator model
-  sigma2 = 1,  # Noise scale for outcome model
-  pathway = "partial"
-)
+###############################################################################
 
-# The simulated data includes:
-# sim_data$X : exposure matrix (n × m)
-# sim_data$M : mediator matrix (n × q)
-# sim_data$Y : outcome vector (n × 1)
-# sim_data$alpha, sim_data$eta : true coefficient matrices
+library(MASS)
+library(Matrix)
+# Optional packages used by comparison methods
+# install.packages(c("glmnet", "ncvreg", "SIS", "PMA", "CVXR"))
+source("../R/MEMM.R")
+set.seed(20260429)
 
-#--- 2. Cross-validate LASSO penalties ---------------------------------------
-cv_results <- cv_select_lambda(
-  X = sim_data$X,
-  M = sim_data$M,
-  Y = sim_data$Y,
-  lambda_seq = c(0, 0.1, 0.25, 0.5, 1), # tuning grid
-  folds = 5
-)
-
-cat("Selected λ_a:", cv_results$best_lambda_a, "\n")
-cat("Selected λ_b:", cv_results$best_lambda_b, "\n")
-
-#--- 3. Fit model via ADMM optimization -------------------------------------
-fit <- optimize_weights(
-  X = sim_data$X,
-  M = sim_data$M,
-  Y = sim_data$Y,
-  lambda_a = cv_results$best_lambda_a,
-  lambda_b = cv_results$best_lambda_b,
-  tol = 1e-4,
-  max_iter = 1000
-)
-
-# Estimated projection directions:
-a_hat <- fit$a
-b_hat <- fit$b
-
-#--- 4. Evaluate performance ------------------------------------------------
-metrics <- evaluate_performance(
-  a_true = sim_data$a_true,
-  b_true = sim_data$b_true,
-  a_est = a_hat,
-  b_est = b_hat
-)
-
-print(metrics)
-
-#--- 5. (Optional) Run the automated wrapper ---------------------------------
-summary_results <- run_simulation_with_cv(
-  n_runs = 5,
-  n1 = 100,
-  m = 10,
-  q = 8,
-  q_a = 3,
-  r = 2,
-  rhoX = 0.3,
-  rhoM = 0.3,
+table1_results <- run_table12_summaries(
+  nrep = 1000,
+  pathways = c("complete"),
+  size_grid = data.frame(
+    m = c(20L, 50L),
+    q = c(20L, 50L),
+    stringsAsFactors = FALSE
+  ),
+  rhoX_values = c(0, 0.3),
+  rhoM_values = c(0, 0.3),
+  n1 = 200,
   sigma1 = 1,
   sigma2 = 1,
-  pathway = "partial"
+  x_dist = "normal",
+  m_noise_dist = "normal",
+  df_x = 6,
+  df_m = 6,
+  c_signal = NULL,
+  methods = c(
+    "MEMM",
+    "SIS_MCP",
+    "Pathway",
+    "TS",
+    "DM1",
+    "DM2",
+    "SPCMA",
+    "FBAS"
+  ),
+  threshold = 1e-2,
+  lambda_fbas = 0.01,
+  rho_fbas = 1,
+  lambda_n = 1,
+  lambda_a_seq = c(0, 0.1, 0.2, 0.5),
+  lambda_b_seq = c(0, 0.1, 0.2, 0.5),
+  K = 5,
+  final_n_restarts = 1,
+  proxy_aggregation = "l2",
+  truth_mode = "legacy_mediator_only",
+  seed = 20260429,
+  verbose = TRUE
 )
 
-print(summary_results)
+table1_complete <- table1_results$table1_complete
+print(table1_complete)
+
