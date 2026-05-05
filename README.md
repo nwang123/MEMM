@@ -5,18 +5,27 @@ It supports realistic simulation of correlated omics-style data, cross-validated
 
 ![Alt text](./Fig1.png)
 
-## R Code Overview
-
-The implementation consists of four main functions that together form a complete pipeline for simulation, model estimation, and performance evaluation.\\
-1.	simulate_data()
-Generates synthetic exposure–mediator–outcome data under user-specified correlation, noise, and mediation structures. It allows for complete, partial, or no mediation pathways by modifying the true parameters (\alpha, \eta, \gamma). The function returns standardized matrices X, M, Y and true coefficients for downstream benchmarking.\\
-2.	optimize_weights()
-Implements the ADMM-based algorithm to estimate the projection directions a and b under joint LASSO penalties \lambda_a and \lambda_b, with additional penalty \lambda_n for the correlation constraint. Iteratively updates primal and dual variables until convergence, returning the estimated a, b.\\
-3.	cv_select_lambda()
-Performs K-fold cross-validation over a grid of (\lambda_a, \lambda_b) to minimize the average sum of squared residuals (SSR). Outputs the optimal tuning parameters and the full error surface for diagnostic visualization.\\
-4.	run_simulation_with_cv()
-Serves as the master wrapper that integrates data generation, cross-validation, ADMM fitting, and performance evaluation (Accuracy, Precision, Recall, F1, and Mediation Proportion).
-Designed for repeated Monte Carlo runs to summarize mean performance across simulation replicates.
+R Code Overview
+===========
+The R implementation provides a complete workflow for simulating data, fitting the MEMM model, selecting tuning parameters, and evaluating model performance. The core pipeline is organized around the following key functions.
+### `simulate_data()`
+Generates synthetic exposure--mediator--outcome data under user-specified simulation settings, including the number of exposures and mediators, correlation structures, noise levels, signal strength, and mediation pathway type.
+The function supports complete mediation, partial mediation, and no-mediation settings by modifying the underlying true parameters \(\alpha\), \(\eta\), and \(\gamma\). It also allows reviewer-requested extensions such as heavy-tailed exposure and mediator-noise distributions.
+**Main output:** standardized matrices `X`, `M`, and `Y`, together with the true active exposure and mediator sets and true parameter objects used for benchmarking.
+### `optimize_weights()`
+Implements the core ADMM-based MEMM optimization algorithm. It estimates the sparse exposure and mediator loading vectors, denoted by `a` and `b`, under normalization constraints.
+The objective combines model-fitting terms, a mediation-proportion component controlled by `lambda_n`, and sparsity-inducing \(L_1\) penalties controlled by `lambda_a` and `lambda_b`.
+**Main output:** estimated loading vectors `a` and `b`.
+### `cv_select_lambda()`
+Performs \(K\)-fold cross-validation to select the regularization parameters `lambda_a` and `lambda_b` over a user-specified grid. The selected tuning parameters minimize the average prediction residual sum of squares across validation folds.
+**Main output:** selected values of `lambda_a` and `lambda_b`, together with the full cross-validation error grid.
+### `run_simulation_with_cv()`
+Serves as the main simulation wrapper. For each Monte Carlo replicate, it generates data, selects tuning parameters, fits MEMM, estimates the mediation proportion, and computes performance metrics.
+The reported metrics include mediation proportion, absolute MP bias, accuracy, precision, recall, F1-score, \(L_2\) estimation errors for `a` and `b`, and cosine similarities for directional recovery.
+**Main output:** a data frame containing performance metrics for all simulation replications.
+### `run_scenario_grid()`
+Runs repeated simulations over a user-defined grid of scenarios. This function is used for the main simulation settings and reviewer-requested extensions, including heavy-tailed robustness, initialization sensitivity, strong-signal settings, high-correlation settings, and the high-dimensional \(m \ge n\) setting.
+**Main output:** scenario-level summary results.
 
 Installation
 ===
@@ -33,13 +42,18 @@ The following help page will also provide quick references for TIPS package and 
 library(MEMM)
 ```
 
-Output 
+Output
 ===========
-Returns a comprehensive summary list including:
-1. sim_data: data generated in the current replicate;
-2. lambda_a, lambda_b: selected tuning parameters;
-3. fit: ADMM fitting results (a_est, b_est);
-4. metrics: numerical performance (Bias, Precision, Recall, F1, Mediation Proportion).
+The simulation workflow returns either replicate-level results or scenario-level summaries, depending on the function used.
+Typical output includes:
+- `MP`: estimated mediation proportion;
+- `true_MP`: true mediation proportion used in the data-generating mechanism;
+- `AbsBias_MP`: absolute bias of the estimated mediation proportion;
+- `Accuracy`, `Precision`, `Recall`, and `F1`: support-recovery metrics;
+- `Cosine_avg`: average of `Cosine_a` and `Cosine_b`;
+- selected tuning parameters, where applicable, including `lambda_a` and `lambda_b`;
+- fitted loading vectors `a` and `b`, where applicable.
+For real-data analysis, the workflow returns the estimated exposure and mediator loading vectors, selected tuning parameters, and ranked active exposures and mediators. The individual-level real data are not included in this repository due to controlled-access data-use restrictions.
 
 Development
 ===========
