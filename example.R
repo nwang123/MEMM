@@ -23,7 +23,7 @@ source("../R/MEMM.R")
       stringsAsFactors = FALSE
     ),
     rhoX_values = c(0, 0.3),
-    rhoM_values = c(0.1, 0.2),
+    rhoM_values = c(0, 0.3),
     n1 = 200,
     sigma1 = 1,
     sigma2 = 1,
