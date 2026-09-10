@@ -31,6 +31,15 @@
 ###############################################################################
 # Load required package for multivariate normal simulation
 ###############################################################################
+
+# Install missing packages and load all libraries
+packages <- c("MASS", "Matrix", "glmnet", "ncvreg", "SIS", "PMA", "CVXR")
+
+installed_packages <- packages %in% rownames(installed.packages())
+if (any(!installed_packages)) {
+  install.packages(packages[!installed_packages])
+}
+
 library(MASS)
 library(Matrix)
 library(glmnet)
@@ -38,6 +47,7 @@ library(ncvreg)
 library(SIS)
 library(PMA)
 library(CVXR)
+
 
 ###############################################################################
 # 1) Small helpers
