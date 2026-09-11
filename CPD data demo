@@ -1,0 +1,56 @@
+# MEMM real-data example: fixed tuning, no CV.
+library(MEMM)
+
+# 1. Read data; rows must represent the same participants in the same order.
+data_dir <- "/Users/wangn/Downloads"
+genExp <- readRDS(file.path(data_dir, "genExp_deID.Rds"))
+CPD   <- read.csv(file.path(data_dir, "CPDins2_deID.csv"), check.names = FALSE)
+FCdat <- read.csv(file.path(data_dir, "FCdat_deID.csv"), check.names = FALSE)
+
+# 2. Select the tissue used in the final analysis; Amygdala is an example choice.
+tissue <- "exp_Brain_Amygdala_predicted_expression"
+expression <- genExp[[tissue]]
+
+# Assumes each tissue has 21 expression columns plus an ID column named eid.
+# Change id_column if the extra column has a different name.
+id_column <- "eid"
+X <- scale(as.matrix(expression[setdiff(names(expression), id_column)]))
+M <- scale(as.matrix(FCdat[setdiff(names(FCdat), "eid")]))
+Y <- as.numeric(scale(CPD$sumCPD))
+rownames(X) <- rownames(M) <- NULL
+print(dim(X))  # Expected: 710 21.
+# Standardization is shown; retain the preprocessing used in the final analysis.
+
+# 3. Enter the final tuning values and fit MEMM.
+lambda_n <- NA_real_
+lambda_a <- NA_real_
+lambda_b <- NA_real_
+
+fit <- optimize_weights(X = X, M = M, Y = Y,
+                        lambda_n = lambda_n, lambda_a = lambda_a, lambda_b = lambda_b,
+                        max_iter = 50, tol = 1e-3)
+
+# 4. Calculate results.
+x <- as.numeric(X %*% fit$a)
+m <- as.numeric(M %*% fit$b)
+outcome_fit <- lm(Y ~ x + m)
+alpha <- unname(coef(lm(m ~ x))["x"])
+gamma <- unname(coef(outcome_fit)["x"])
+eta   <- unname(coef(outcome_fit)["m"])
+tau   <- unname(coef(lm(Y ~ x))["x"])
+
+effects <- data.frame(alpha = alpha, gamma = gamma, eta = eta,
+                      indirect_effect = alpha * eta, total_effect = tau,
+                      MP = if (abs(tau) < 1e-8) NA_real_ else abs(alpha * eta) / tau)
+gene_loadings <- data.frame(gene = colnames(X), loading = as.numeric(fit$a))
+FC_loadings   <- data.frame(FC = colnames(M), loading = as.numeric(fit$b))
+gene_loadings <- gene_loadings[order(-abs(gene_loadings$loading)), c("gene", "loading")]
+FC_loadings   <- FC_loadings[order(-abs(FC_loadings$loading)), c("FC", "loading")]
+rownames(gene_loadings) <- rownames(FC_loadings) <- NULL
+
+# 5. Print and save results.
+results <- list(tissue = tissue,
+                tuning = c(lambda_n = lambda_n, lambda_a = lambda_a, lambda_b = lambda_b),
+                effects = effects, gene_loadings = gene_loadings, FC_loadings = FC_loadings)
+print(results)
+saveRDS(results, file.path(data_dir, "MEMM_real_data_results.rds"))
