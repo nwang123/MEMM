@@ -22,10 +22,9 @@ print(dim(X))  # Expected: 710 21.
 # Standardization is shown; retain the preprocessing used in the final analysis.
 
 # 3. Enter the final tuning values and fit MEMM.
-lambda_n <- NA_real_
-lambda_a <- NA_real_
-lambda_b <- NA_real_
-
+lambda_n <- 0.1
+lambda_a <- 0.2
+lambda_b <- 0.3
 fit <- optimize_weights(X = X, M = M, Y = Y,
                         lambda_n = lambda_n, lambda_a = lambda_a, lambda_b = lambda_b,
                         max_iter = 50, tol = 1e-3)
