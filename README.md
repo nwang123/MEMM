@@ -1,5 +1,9 @@
 MEMM
 ===
+**Draft optimizer correction:** the admissible Equation (4) implementation passes
+its code checks. Preservation of the manuscript's numerical results has not
+been established; see [synthetic validation findings](docs/validation.md).
+
 This R package provides a simulation and estimation framework for high-dimensional multivariate mediation analysis, integrating exposure, mediator, and outcome data through a penalized joint model solved by ADMM (Alternating Direction Method of Multipliers).
 It supports realistic simulation of correlated omics-style data, cross-validated tuning of regularization parameters, and evaluation of mediation performance metrics such as accuracy, precision, recall, F1-score, and estimated mediation proportion (MP).
 
