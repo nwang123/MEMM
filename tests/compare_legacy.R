@@ -25,4 +25,7 @@ print(rbind(summarize(old,"legacy"),summarize(new,"revised")),row.names=FALSE,di
 print(new$diagnostics)
 q <- new$history$decrease_ratio[new$history$stage=="complete"]
 cat("Iterations with negative observed primal decrease ratio:",sum(q<0,na.rm=TRUE),"\n")
+cat("Minimum observed primal decrease ratio:",min(q,na.rm=TRUE),"\n")
+complete_objectives <- new$history$objective[new$history$stage %in% c("initial","complete")]
+cat("Maximum complete-iteration primal objective increase:",max(diff(complete_objectives)),"\n")
 cat("No equivalence or negligible-impact claim follows from this example.\n")

@@ -23,3 +23,6 @@ jobs:
         run: |
           git show ffcdf445a866be02c0f0b3de761406ba0029a325:R/MEMM.R > /tmp/MEMM-legacy.R
           Rscript tests/compare_legacy.R /tmp/MEMM-legacy.R
+      - name: Smoke-test the provided real-data demo
+        run: |
+          Rscript -e 'invisible(capture.output(source("real data/CPD data demo"))); print(effects); print(fit$diagnostics); print(fit$termination)'
