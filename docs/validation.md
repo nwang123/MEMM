@@ -3,7 +3,7 @@
 Status: draft correction, **not ready for a claim of unchanged manuscript results**.
 
 Code tested: commit `1b58d13b250b4904ab4fa850c3a4202f25cec5b2`.
-GitHub Actions: https://github.com/nwang123/MEMM/actions/runs/37785200901
+Objective/feasibility checks: https://github.com/nwang123/MEMM/actions/runs/37784798651
 R 4.3.3, Ubuntu; all automated code checks passed.
 
 ## Numerical checks
