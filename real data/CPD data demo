@@ -1,8 +1,8 @@
 # MEMM real-data example: fixed tuning, no CV.
-library(MEMM)
+if (file.exists("R/MEMM.R")) source("R/MEMM.R") else library(MEMM)
 
 # 1. Read data; rows must represent the same participants in the same order.
-data_dir <- "/Users/wangn/Downloads"
+data_dir <- Sys.getenv("MEMM_DATA_DIR", unset = "real data")
 genExp <- readRDS(file.path(data_dir, "genExp_deID.Rds"))
 CPD   <- read.csv(file.path(data_dir, "CPDins2_deID.csv"), check.names = FALSE)
 FCdat <- read.csv(file.path(data_dir, "FCdat_deID.csv"), check.names = FALSE)
@@ -21,26 +21,24 @@ rownames(X) <- rownames(M) <- NULL
 print(dim(X))  # Expected: 710 21.
 # Standardization is shown; retain the preprocessing used in the final analysis.
 
-# 3. Enter the final tuning values and fit MEMM.
+# 3. Illustrative fixed tuning; retain the values used in the actual analysis.
+# r0 and delta define D in Algorithm 1. Their impact must be assessed from runs.
+r0 <- 1e-6
+delta <- 1e-6
 lambda_n <- 0.1
 lambda_a <- 0.2
 lambda_b <- 0.3
 fit <- optimize_weights(X = X, M = M, Y = Y,
                         lambda_n = lambda_n, lambda_a = lambda_a, lambda_b = lambda_b,
-                        max_iter = 50, tol = 1e-3)
+                        max_iter = 50, tol = 1e-3, r0 = r0, delta = delta)
 
-# 4. Calculate results.
-x <- as.numeric(X %*% fit$a)
-m <- as.numeric(M %*% fit$b)
-outcome_fit <- lm(Y ~ x + m)
-alpha <- unname(coef(lm(m ~ x))["x"])
-gamma <- unname(coef(outcome_fit)["x"])
-eta   <- unname(coef(outcome_fit)["m"])
-tau   <- unname(coef(lm(Y ~ x))["x"])
-
-effects <- data.frame(alpha = alpha, gamma = gamma, eta = eta,
-                      indirect_effect = alpha * eta, total_effect = tau,
-                      MP = if (abs(tau) < 1e-8) NA_real_ else abs(alpha * eta) / tau)
+# 4. Report the same signed profiled coefficients used in Equation (4).
+# Diagnostics do not verify the additional assumptions of Theorem 1.
+p <- fit$profile
+effects <- data.frame(alpha=p$alpha,gamma=p$gamma,eta=p$eta,
+                      indirect_effect=p$alpha*p$eta,total_effect=p$tau,MP=p$MP)
+print(fit$diagnostics)
+print(fit$termination)
 gene_loadings <- data.frame(gene = colnames(X), loading = as.numeric(fit$a))
 FC_loadings   <- data.frame(FC = colnames(M), loading = as.numeric(fit$b))
 gene_loadings <- gene_loadings[order(-abs(gene_loadings$loading)), c("gene", "loading")]
@@ -50,6 +48,9 @@ rownames(gene_loadings) <- rownames(FC_loadings) <- NULL
 # 5. Print and save results.
 results <- list(tissue = tissue,
                 tuning = c(lambda_n = lambda_n, lambda_a = lambda_a, lambda_b = lambda_b),
-                effects = effects, gene_loadings = gene_loadings, FC_loadings = FC_loadings)
+                effects = effects, gene_loadings = gene_loadings, FC_loadings = FC_loadings,
+                objective = fit$objective, diagnostics = fit$diagnostics,
+                history = fit$history, control = fit$control, termination = fit$termination)
 print(results)
 saveRDS(results, file.path(data_dir, "MEMM_real_data_results.rds"))
+
