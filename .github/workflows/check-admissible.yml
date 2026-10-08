@@ -1,0 +1,25 @@
+name: Check admissible optimizer
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  numerical-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install R
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends r-base-core
+      - name: Check objective, gradients and feasibility
+        run: Rscript tests/check_admissible.R
+      - name: Compare with the legacy optimizer on a fixed synthetic example
+        run: |
+          git show ffcdf445a866be02c0f0b3de761406ba0029a325:R/MEMM.R > /tmp/MEMM-legacy.R
+          Rscript tests/compare_legacy.R /tmp/MEMM-legacy.R

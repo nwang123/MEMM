@@ -29,26 +29,8 @@
 
 
 ###############################################################################
-# Load required package for multivariate normal simulation
-###############################################################################
-
-# Install missing packages and load all libraries
-packages <- c("MASS", "Matrix", "glmnet", "ncvreg", "SIS", "PMA", "CVXR")
-
-installed_packages <- packages %in% rownames(installed.packages())
-if (any(!installed_packages)) {
-  install.packages(packages[!installed_packages])
-}
-
-library(MASS)
-library(Matrix)
-library(glmnet)
-library(ncvreg)
-library(SIS)
-library(PMA)
-library(CVXR)
-
-
+# Optional comparison packages are used through their namespaces below.
+# Sourcing the optimizer does not install packages or attach libraries.
 ###############################################################################
 # 1) Small helpers
 ###############################################################################
@@ -611,13 +593,6 @@ normalize_loading_by_design <- function(weight, design) {
   weight / denom
 }
 
-compute_restart_score <- function(X, M, Y, a_hat, b_hat) {
-  x_agg <- as.vector(X %*% a_hat)
-  z_agg <- as.vector(M %*% b_hat)
-  fit <- lm(Y ~ x_agg + z_agg)
-  sum(fit$residuals^2)
-}
-
 ###############################################################################
 # 2) Original first-draft data generation with optional reviewer extensions
 ###############################################################################
@@ -725,190 +700,300 @@ simulate_data <- function(n1, m, q, q_a, r,
 }
 
 ###############################################################################
-# 3) Original ADMM optimizer
+# 3) Equation (4) with admissible, inexact ADMM loading updates
 ###############################################################################
+
+# Equation (4), under unit-aggregate normalization. All coefficients are profiled
+# from the CURRENT loading pair. X, M and Y must be centered (the optimizer
+# centers them once and returns the centering constants).
+memm_profile <- function(X, M, Y, a, b) {
+  x <- as.vector(X %*% a)
+  m <- as.vector(M %*% b)
+  tau <- sum(x * Y)
+  alpha <- sum(x * m)
+  gap <- 1 - alpha^2
+  if (!is.finite(gap) || gap <= 0 || !is.finite(tau) || tau == 0) {
+    return(list(tau = tau, alpha = alpha, gap = gap, smooth = Inf))
+  }
+  s <- sum(m * Y)
+  eta <- (s - alpha * tau) / gap
+  gamma <- (tau - alpha * s) / gap
+  list(tau = tau, alpha = alpha, eta = eta, gamma = gamma, gap = gap,
+       MP = alpha * eta / tau,
+       ssr_yx = sum((Y - tau * x)^2),
+       ssr_mx = sum((m - alpha * x)^2),
+       ssr_yxm = sum((Y - gamma * x - eta * m)^2))
+}
+
+memm_feasibility <- function(X, M, Y, a, b, r0 = 1e-6, delta = 1e-6,
+                             norm_tol = 1e-8) {
+  x <- as.vector(X %*% a)
+  m <- as.vector(M %*% b)
+  tau_margin <- sum(x * Y) - r0
+  alpha_margin <- 1 - sum(x * m)^2 - delta
+  norm_error_a <- abs(sqrt(sum(x^2)) - 1)
+  norm_error_b <- abs(sqrt(sum(m^2)) - 1)
+  quantities <- c(tau_margin, alpha_margin, norm_error_a, norm_error_b)
+  list(feasible = all(is.finite(quantities)) && tau_margin >= 0 &&
+         alpha_margin >= 0 && norm_error_a <= norm_tol && norm_error_b <= norm_tol,
+       tau_margin = tau_margin, alpha_margin = alpha_margin,
+       norm_error_a = norm_error_a, norm_error_b = norm_error_b)
+}
+
+memm_objective <- function(X, M, Y, a, b, lambda_n, lambda_a, lambda_b,
+                           r0 = 1e-6, delta = 1e-6) {
+  feasible <- memm_feasibility(X, M, Y, a, b, r0, delta)
+  if (!feasible$feasible) return(Inf)
+  p <- memm_profile(X, M, Y, a, b)
+  # Eq. (4): three SSR terms / (2n), including the JOINT outcome SSR / gap,
+  # minus lambda_n times SIGNED MP, plus both L1 penalties. No MP clipping.
+  (p$ssr_yx + p$ssr_mx + p$ssr_yxm / p$gap) / (2 * nrow(X)) -
+    lambda_n * p$MP + lambda_a * sum(abs(a)) + lambda_b * sum(abs(b))
+}
+
+memm_smooth_gradient <- function(X, M, Y, a, b, lambda_n) {
+  # Differentiate the normalized-score extension in t=x'Y, s=m'Y, c=x'm.
+  # On the normalization manifold:
+  # F = {T-t^2 + 1-c^2 + T/D-N/D^2}/(2n) - lambda_n*c*(s-c*t)/(D*t),
+  # D=1-c^2, N=t^2+s^2-2*c*t*s. The tangent projection below accounts for
+  # the loading normalization. Reprofiling is essential at every trial step.
+  x <- as.vector(X %*% a)
+  m <- as.vector(M %*% b)
+  t <- sum(x * Y); s <- sum(m * Y); c <- sum(x * m)
+  D <- 1 - c^2; N <- t^2 + s^2 - 2 * c * t * s; T <- sum(Y^2)
+  n <- nrow(X)
+  ft <- (-2*t - (2*t - 2*c*s)/D^2)/(2*n) + lambda_n*c*s/(D*t^2)
+  fs <- -(2*s - 2*c*t)/(2*n*D^2) - lambda_n*c/(D*t)
+  fc <- (-2*c + 2*c*T/D^2 + 2*t*s/D^2 - 4*c*N/D^3)/(2*n) -
+    lambda_n*((1+c^2)*s/t - 2*c)/D^2
+  list(a = as.vector(ft * crossprod(X, Y) + fc * crossprod(X, m)),
+       b = as.vector(fs * crossprod(M, Y) + fc * crossprod(M, x)))
+}
+
+memm_normalize <- function(w, design) {
+  norm <- sqrt(sum((design %*% w)^2))
+  if (!is.finite(norm) || norm <= .Machine$double.eps) return(NULL)
+  as.vector(w / norm)
+}
+
+memm_initialize <- function(X, M, Y, init_a, init_b, r0, delta) {
+  a <- memm_normalize(if (is.null(init_a)) crossprod(X, Y) else init_a, X)
+  if (!is.null(a) && sum((X %*% a) * Y) < 0) a <- -a
+  repaired_a <- is.null(a) || sum((X %*% a) * Y) < r0
+  if (repaired_a) {
+    # This score maximizes tau over the column space of X, including when
+    # X is rank deficient. Aliased coefficients are set to zero.
+    w <- stats::lm.fit(X, Y)$coefficients
+    w[is.na(w)] <- 0
+    a <- memm_normalize(w, X)
+  }
+  if (is.null(a) || sum((X %*% a) * Y) < r0) {
+    stop("No feasible exposure initialization: r0 exceeds the attainable tau.")
+  }
+  b <- memm_normalize(if (is.null(init_b)) crossprod(M, Y) else init_b, M)
+  repaired_b <- is.null(b) || !memm_feasibility(X, M, Y, a, b, r0, delta)$feasible
+  if (repaired_b) {
+    # Seek a nonzero mediator score orthogonal to Xa. Then alpha=0 and
+    # the separation constraint holds. Never repair a denominator by clipping.
+    w <- as.vector(crossprod(M, X %*% a))
+    candidates <- c(list(if (is.null(b)) rep(1, ncol(M)) else b),
+                    lapply(seq_len(ncol(M)), function(j) as.numeric(seq_len(ncol(M)) == j)))
+    b <- NULL
+    for (v in candidates) {
+      if (sum(w^2) > 0) v <- v - w * sum(w * v) / sum(w^2)
+      trial <- memm_normalize(v, M)
+      if (!is.null(trial) && memm_feasibility(X, M, Y, a, trial, r0, delta)$feasible) {
+        b <- trial
+        break
+      }
+    }
+  }
+  if (is.null(b) || !memm_feasibility(X, M, Y, a, b, r0, delta)$feasible) {
+    stop("Could not construct a feasible loading pair; supply feasible init_a/init_b or review r0/delta.")
+  }
+  list(a = a, b = b, repaired_a = repaired_a, repaired_b = repaired_b)
+}
 
 optimize_weights <- function(X, M, Y, lambda_n, lambda_a, lambda_b,
                              max_iter = 50, tol = 1e-4,
-                             init_a = NULL, init_b = NULL) {
-  m <- ncol(X)
-  q <- ncol(M)
-  
-  if (is.null(init_a)) {
-    a <- as.vector(crossprod(X, Y))
-  } else {
-    a <- as.vector(init_a)
+                             init_a = NULL, init_b = NULL,
+                             r0 = 1e-6, delta = 1e-6, rho = 1,
+                             eps_pri = tol, eps_dual = tol,
+                             inner_max_iter = 20, step_size = 0.1,
+                             max_backtracks = 40, record_history = TRUE) {
+  X <- as.matrix(X); M <- as.matrix(M); Y <- as.vector(Y)
+  if (!is.numeric(X) || !is.numeric(M) || !is.numeric(Y) ||
+      nrow(X) != nrow(M) || nrow(X) != length(Y) || nrow(X) < 2 ||
+      ncol(X) < 1 || ncol(M) < 1 ||
+      any(!is.finite(X)) || any(!is.finite(M)) || any(!is.finite(Y))) {
+    stop("X, M and Y must be finite numeric data with matching rows.")
   }
-  if (is.null(init_b)) {
-    b <- as.vector(crossprod(M, Y))
-  } else {
-    b <- as.vector(init_b)
+  control_values <- list(lambda_n, lambda_a, lambda_b, r0, delta, rho,
+                         tol, eps_pri, eps_dual, step_size)
+  if (any(!vapply(control_values, function(v) is.numeric(v) && length(v) == 1L &&
+                  is.finite(v), logical(1))) ||
+      min(lambda_n, lambda_a, lambda_b) < 0 || r0 <= 0 || delta <= 0 || delta >= 1 ||
+      min(rho, tol, eps_pri, eps_dual, step_size) <= 0) stop("Invalid tuning parameters or controls.")
+  for (v in list(max_iter, inner_max_iter, max_backtracks)) {
+    if (!is.numeric(v) || length(v) != 1L || !is.finite(v) || v < 1 || v != as.integer(v))
+      stop("Iteration limits must be positive integers.")
   }
-  a <- normalize_loading_by_design(a, X)
-  b <- normalize_loading_by_design(b, M)
-  
-  z_a <- a
-  z_b <- b
-  u_a <- numeric(m)
-  u_b <- numeric(q)
-  rho <- 1
-  
-  P_const <- as.vector(crossprod(X, Y))
-  P2_const <- as.vector(crossprod(M, Y))
-  
+  if ((!is.null(init_a) && (length(init_a) != ncol(X) || any(!is.finite(init_a)))) ||
+      (!is.null(init_b) && (length(init_b) != ncol(M) || any(!is.finite(init_b)))))
+    stop("Initial loadings must be finite and have the appropriate lengths.")
+  centers <- list(X = colMeans(X), M = colMeans(M), Y = mean(Y))
+  X <- sweep(X, 2, centers$X); M <- sweep(M, 2, centers$M); Y <- Y - centers$Y
+  initial <- memm_initialize(X, M, Y, init_a, init_b, r0, delta)
+  a <- initial$a; b <- initial$b
+  z_a <- a; z_b <- b; u_a <- numeric(length(a)); u_b <- numeric(length(b))
+  rejected_feasibility <- 0L; rejected_objective <- 0L; stalled_blocks <- 0L
+  min_tau_margin <- Inf; min_alpha_margin <- Inf; max_norm_error <- 0
+  history <- list(); converged <- FALSE
+  objective <- function(a, b, la = lambda_a, lb = lambda_b) {
+    memm_objective(X, M, Y, a, b, lambda_n, la, lb, r0, delta)
+  }
+  augmented <- function(a, b) {
+    # Scaled dual convention u=y/rho, including the negative squared-dual terms.
+    objective(a, b, 0, 0) + lambda_a * sum(abs(z_a)) + lambda_b * sum(abs(z_b)) +
+      rho/2 * (sum((a-z_a+u_a)^2) + sum((b-z_b+u_b)^2) - sum(u_a^2) - sum(u_b^2))
+  }
+  record <- function(k, stage, primal = NA_real_, dual = NA_real_,
+                      increment = NA_real_, decrease_ratio = NA_real_) {
+    f <- memm_feasibility(X, M, Y, a, b, r0, delta)
+    if (!f$feasible) stop("Internal error: an infeasible loading pair was accepted.")
+    min_tau_margin <<- min(min_tau_margin, f$tau_margin)
+    min_alpha_margin <<- min(min_alpha_margin, f$alpha_margin)
+    max_norm_error <<- max(max_norm_error, f$norm_error_a, f$norm_error_b)
+    if (record_history) history[[length(history) + 1L]] <<- data.frame(
+      iteration = k, stage = stage, objective = objective(a,b),
+      augmented_lagrangian = augmented(a,b), tau_margin = f$tau_margin,
+      alpha_margin = f$alpha_margin, norm_error_a = f$norm_error_a,
+      norm_error_b = f$norm_error_b, primal_inf = primal, dual_inf = dual,
+      increment = increment, decrease_ratio = decrease_ratio)
+  }
+  update_block <- function(block) {
+    # Inexact constrained block update: tangent descent + normalized retraction
+    # and backtracking. Every ACCEPTED trial lies in the relevant slice of D.
+    # This is not a certified exact/global solution of Algorithm 1's argmin.
+    design <- if (block == "a") X else M
+    weight <- if (block == "a") a else b
+    aux <- if (block == "a") z_a else z_b
+    dual <- if (block == "a") u_a else u_b
+    make_pair <- function(w) if (block == "a") list(a=w,b=b) else list(a=a,b=w)
+    for (j in seq_len(inner_max_iter)) {
+      pair <- make_pair(weight)
+      grad <- memm_smooth_gradient(X,M,Y,pair$a,pair$b,lambda_n)[[block]] + rho*(weight-aux+dual)
+      normal <- as.vector(crossprod(design, design %*% weight))
+      grad <- grad - normal * sum(normal * grad) / sum(normal^2)
+      if (any(!is.finite(grad))) stop("Nonfinite gradient; review scaling and admissible-region bounds.")
+      if (sqrt(sum(grad^2)) <= tol) break
+      before <- objective(pair$a,pair$b,0,0) + rho/2*sum((weight-aux+dual)^2)
+      step <- step_size; accepted <- FALSE
+      for (bt in seq_len(max_backtracks)) {
+        trial <- memm_normalize(weight - step * grad, design)
+        if (is.null(trial)) {
+          rejected_feasibility <<- rejected_feasibility + 1L
+        } else {
+          candidate <- make_pair(trial)
+          if (!memm_feasibility(X,M,Y,candidate$a,candidate$b,r0,delta)$feasible) {
+            rejected_feasibility <<- rejected_feasibility + 1L
+          } else {
+            after <- objective(candidate$a,candidate$b,0,0) + rho/2*sum((trial-aux+dual)^2)
+            if (is.finite(after) && after <= before - 1e-4*step*sum(grad^2)) {
+              accepted <- TRUE
+              margins <- memm_feasibility(X,M,Y,candidate$a,candidate$b,r0,delta)
+              min_tau_margin <<- min(min_tau_margin, margins$tau_margin)
+              min_alpha_margin <<- min(min_alpha_margin, margins$alpha_margin)
+              max_norm_error <<- max(max_norm_error, margins$norm_error_a, margins$norm_error_b)
+              weight <- trial
+              break
+            }
+            rejected_objective <<- rejected_objective + 1L
+          }
+        }
+        step <- step / 2
+      }
+      if (!accepted) {
+        stalled_blocks <<- stalled_blocks + 1L
+        break # Retain the previous feasible point; never accept an unsafe step.
+      }
+    }
+    weight
+  }
+  record(0L, "initial")
   for (iter in seq_len(max_iter)) {
-    a_old <- a
-    b_old <- b
-    
-    ## Update a
-    for (j in seq_len(5)) {
-      X_a <- as.vector(X %*% a)
-      M_b <- as.vector(M %*% b)
-      r_yx <- as.numeric(crossprod(a, P_const))
-      r_yz <- as.numeric(crossprod(b, P2_const))
-      alpha_val <- as.numeric(crossprod(X_a, M_b))
-      D_val <- 1 - alpha_val^2
-      T_val <- sum(Y^2)
-      N_val <- r_yx^2 + r_yz^2 - 2 * alpha_val * r_yx * r_yz
-      Q_vec <- as.vector(crossprod(X, M_b))
-      
-      g1 <- -2 * r_yx * P_const
-      w_med <- as.vector(crossprod(M, X_a))
-      g2 <- -2 * as.vector(crossprod(X, M %*% w_med))
-      dN_da <- 2 * r_yx * P_const - 2 * r_yz * (r_yx * Q_vec + alpha_val * P_const)
-      if (D_val == 0) {
-        D_val <- 1e-6
-      }
-      g3 <- (2 * T_val * alpha_val * Q_vec) / (D_val^2) -
-        dN_da / (D_val^2) -
-        (4 * alpha_val * N_val * Q_vec) / (D_val^3)
-      num_prime <- r_yz * (1 + alpha_val^2) * Q_vec -
-        2 * alpha_val * r_yx * Q_vec -
-        2 * alpha_val^2 * (1 - alpha_val^2) * P_const
-      g4 <- -lambda_n * num_prime / (D_val^2)
-      g5 <- rho * (a - z_a + u_a)
-      
-      grad_a <- g1 + g2 + g3 + g4 + g5
-      a <- a - 0.1 * grad_a
-      if (sum((X %*% a)^2) != 0) {
-        a <- a / sqrt(sum((X %*% a)^2))
-      }
-    }
-    
-    ## Update b
-    for (j in seq_len(5)) {
-      X_a <- as.vector(X %*% a)
-      M_b <- as.vector(M %*% b)
-      r_yx <- as.numeric(crossprod(a, P_const))
-      r_yz <- as.numeric(crossprod(b, P2_const))
-      alpha_val <- as.numeric(crossprod(X_a, M_b))
-      D_val <- 1 - alpha_val^2
-      T_val <- sum(Y^2)
-      N_val <- r_yx^2 + r_yz^2 - 2 * alpha_val * r_yx * r_yz
-      Q2_vec <- as.vector(crossprod(M, X_a))
-      
-      dN_db <- 2 * r_yz * P2_const -
-        2 * r_yx * (r_yz * Q2_vec + alpha_val * P2_const)
-      if (D_val == 0) {
-        D_val <- 1e-6
-      }
-      g3_b <- (2 * T_val * alpha_val * Q2_vec) / (D_val^2) -
-        dN_db / (D_val^2) -
-        (4 * alpha_val * N_val * Q2_vec) / (D_val^3)
-      num_prime_b <- D_val * alpha_val * P2_const +
-        r_yz * (D_val + 2 * alpha_val^2) * Q2_vec -
-        2 * r_yx * alpha_val * (D_val + alpha_val^2) * Q2_vec
-      g4_b <- -lambda_n * num_prime_b / (D_val^2)
-      g5_b <- rho * (b - z_b + u_b)
-      
-      grad_b <- g3_b + g4_b + g5_b
-      b <- b - 0.1 * grad_b
-      if (sum((M %*% b)^2) != 0) {
-        b <- b / sqrt(sum((M %*% b)^2))
-      }
-    }
-    
-    soft_threshold <- function(x, thr) {
-      sign(x) * pmax(abs(x) - thr, 0)
-    }
-    z_a <- soft_threshold(a + u_a, lambda_a / rho)
-    z_b <- soft_threshold(b + u_b, lambda_b / rho)
-    
-    u_a <- u_a + a - z_a
-    u_b <- u_b + b - z_b
-    
-    if (sqrt(sum((a - a_old)^2) + sum((b - b_old)^2)) < tol) {
+    old <- list(a=a,b=b,za=z_a,zb=z_b,ua=u_a,ub=u_b)
+    old_objective <- objective(a,b)
+    a <- update_block("a")
+    record(iter, "after_a") # Check the intermediate pair (a^{k+1}, b^k).
+    b <- update_block("b")
+    record(iter, "after_b")
+    soft <- function(v,kappa) sign(v)*pmax(abs(v)-kappa,0)
+    z_a <- soft(a+u_a,lambda_a/rho); z_b <- soft(b+u_b,lambda_b/rho)
+    u_a <- u_a + a-z_a; u_b <- u_b + b-z_b
+    primal <- max(abs(c(a-z_a,b-z_b)))
+    dual <- rho*max(abs(c(z_a-old$za,z_b-old$zb)))
+    d2 <- sum(c(a-old$a,b-old$b,z_a-old$za,z_b-old$zb,u_a-old$ua,u_b-old$ub)^2)
+    ratio <- if (d2 > 0) (old_objective-objective(a,b))/d2 else NA_real_
+    record(iter,"complete",primal,dual,sqrt(d2),ratio)
+    if (primal <= eps_pri && dual <= eps_dual) {
+      converged <- TRUE
       break
     }
   }
-  
-  if (sum((X %*% a)^2) != 0) {
-    a <- a / sqrt(sum((X %*% a)^2))
-  }
-  if (sum((M %*% b)^2) != 0) {
-    b <- b / sqrt(sum((M %*% b)^2))
-  }
-  
-  list(a = a, b = b)
+  # No final thresholding/projection of a or b: it could violate D.
+  list(a=a,b=b,z_a=z_a,z_b=z_b,u_a=u_a,u_b=u_b,
+       objective=objective(a,b), profile=memm_profile(X,M,Y,a,b), centers=centers,
+       converged=converged, iterations=iter,
+       termination=if (converged) "admm_residual_tolerances" else "max_iter",
+       history=if (record_history) do.call(rbind,history) else NULL,
+       diagnostics=list(min_tau_margin=min_tau_margin,min_alpha_margin=min_alpha_margin,
+         max_norm_error=max_norm_error,accepted_feasibility_violations=0L,
+         rejected_feasibility_trials=rejected_feasibility,
+         rejected_objective_trials=rejected_objective,stalled_blocks=stalled_blocks,
+         initialization_repaired=c(a=initial$repaired_a,b=initial$repaired_b),
+         primal_inf=primal,dual_inf=dual,
+         theorem_conditions_verified=FALSE),
+       control=list(r0=r0,delta=delta,rho=rho,eps_pri=eps_pri,eps_dual=eps_dual,
+                    inner_max_iter=inner_max_iter,step_size=step_size))
 }
 
 fit_with_restarts <- function(X, M, Y, lambda_n, lambda_a, lambda_b,
-                              n_restarts = 1,
-                              max_iter = 50,
-                              tol = 1e-4,
-                              restart_seed = NULL) {
+                              n_restarts = 1, max_iter = 50, tol = 1e-4,
+                              restart_seed = NULL, optimizer_control = list()) {
   n_restarts <- max(1L, as.integer(n_restarts))
-  
-  best_model <- optimize_weights(
-    X = X, M = M, Y = Y,
-    lambda_n = lambda_n,
-    lambda_a = lambda_a,
-    lambda_b = lambda_b,
-    max_iter = max_iter,
-    tol = tol
-  )
-  best_score <- compute_restart_score(X, M, Y, best_model$a, best_model$b)
-  
-  if (n_restarts > 1) {
-    for (rr in 2:n_restarts) {
-      if (!is.null(restart_seed)) {
-        set.seed(restart_seed + rr - 2L)
-      }
-      init_a <- normalize_loading_by_design(stats::rnorm(ncol(X)), X)
-      init_b <- normalize_loading_by_design(stats::rnorm(ncol(M)), M)
-      candidate_model <- optimize_weights(
-        X = X, M = M, Y = Y,
-        lambda_n = lambda_n,
-        lambda_a = lambda_a,
-        lambda_b = lambda_b,
-        max_iter = max_iter,
-        tol = tol,
-        init_a = init_a,
-        init_b = init_b
-      )
-      candidate_score <- compute_restart_score(X, M, Y,
-                                               candidate_model$a,
-                                               candidate_model$b)
-      if (candidate_score < best_score) {
-        best_model <- candidate_model
-        best_score <- candidate_score
-      }
+  run <- function(init_a = NULL, init_b = NULL) do.call(optimize_weights, c(list(
+    X=X,M=M,Y=Y,lambda_n=lambda_n,lambda_a=lambda_a,lambda_b=lambda_b,
+    max_iter=max_iter,tol=tol,init_a=init_a,init_b=init_b), optimizer_control))
+  best_model <- run()
+  scores <- rep(NA_real_, n_restarts)
+  scores[1] <- best_model$objective
+  failures <- rep(NA_character_, n_restarts)
+  if (n_restarts > 1) for (rr in 2:n_restarts) {
+    if (!is.null(restart_seed)) set.seed(restart_seed + rr - 2L)
+    candidate <- tryCatch(run(stats::rnorm(ncol(X)),stats::rnorm(ncol(M))),
+                          error=function(e) e)
+    if (inherits(candidate, "error")) {
+      failures[rr] <- conditionMessage(candidate)
+      next
     }
+    scores[rr] <- candidate$objective
+    # Select restarts by the SAME penalized Eq. (4), not outcome SSR alone.
+    if (candidate$objective < best_model$objective) best_model <- candidate
   }
-  
-  list(
-    a = best_model$a,
-    b = best_model$b,
-    best_score = best_score,
-    n_restarts = n_restarts
-  )
+  best_model$best_score <- best_model$objective
+  best_model$n_restarts <- n_restarts
+  best_model$restart_scores <- scores
+  best_model$restart_failures <- failures
+  best_model
 }
 
 ###############################################################################
-# 4) Original cross-validation
+# 4) Cross-validation and high-level fitting
 ###############################################################################
 
-cv_select_lambda <- function(X, M, Y, lambda_n, lambda_a_seq, lambda_b_seq, K = 5) {
+cv_select_lambda <- function(X, M, Y, lambda_n, lambda_a_seq, lambda_b_seq, K = 5,
+                             optimizer_control = list()) {
   n <- nrow(X)
   folds <- split(sample(seq_len(n)), rep(seq_len(K), length.out = n))
   mean_SSR <- matrix(NA_real_, nrow = length(lambda_a_seq), ncol = length(lambda_b_seq))
@@ -934,21 +1019,22 @@ cv_select_lambda <- function(X, M, Y, lambda_n, lambda_a_seq, lambda_b_seq, K = 
         M_test <- M[test_idx, , drop = FALSE]
         Y_test <- Y[test_idx]
         
-        model <- optimize_weights(
-          X_train, M_train, Y_train,
+        model <- do.call(optimize_weights, c(list(
+          X = X_train, M = M_train, Y = Y_train,
           lambda_n = lambda_n,
           lambda_a = lam_a,
           lambda_b = lam_b,
           max_iter = 50,
           tol = 1e-3
-        )
+        ), optimizer_control))
         
         a_hat <- model$a
         b_hat <- model$b
-        x_test <- as.vector(X_test %*% a_hat)
-        z_test <- as.vector(M_test %*% b_hat)
-        test_fit <- lm(Y_test ~ x_test + z_test)
-        cv_SSR[k] <- sum(test_fit$residuals^2)
+        x_test <- as.vector(sweep(X_test, 2, model$centers$X) %*% a_hat)
+        z_test <- as.vector(sweep(M_test, 2, model$centers$M) %*% b_hat)
+        prediction <- model$centers$Y + model$profile$gamma*x_test + model$profile$eta*z_test
+        # Use TRAINING coefficients: do not refit regressions on held-out Y.
+        cv_SSR[k] <- sum((Y_test - prediction)^2)
       }
       
       mean_SSR[ia, ib] <- mean(cv_SSR)
@@ -969,7 +1055,8 @@ fit_memm_on_dataset <- function(sim_data,
                                 lambda_b_seq = c(0, 0.1, 0.2, 0.5),
                                 K = 5,
                                 final_n_restarts = 1,
-                                restart_seed = NULL) {
+                                restart_seed = NULL,
+    optimizer_control = list()) {
   X <- sim_data$X
   M <- sim_data$M
   Y <- sim_data$Y
@@ -981,7 +1068,8 @@ fit_memm_on_dataset <- function(sim_data,
     lambda_n = lambda_n,
     lambda_a_seq = lambda_a_seq,
     lambda_b_seq = lambda_b_seq,
-    K = K
+    K = K,
+    optimizer_control = optimizer_control
   )
   
   model <- fit_with_restarts(
@@ -994,15 +1082,13 @@ fit_memm_on_dataset <- function(sim_data,
     n_restarts = final_n_restarts,
     max_iter = 50,
     tol = 1e-3,
-    restart_seed = restart_seed
+    restart_seed = restart_seed,
+    optimizer_control = optimizer_control
   )
   
-  list(
-    a = model$a,
-    b = model$b,
-    best_lambda_a = cv_result$best_lambda_a,
-    best_lambda_b = cv_result$best_lambda_b
-  )
+  model$best_lambda_a <- cv_result$best_lambda_a
+  model$best_lambda_b <- cv_result$best_lambda_b
+  model
 }
 
 build_all_method_matrix_list <- function(
@@ -1017,7 +1103,8 @@ build_all_method_matrix_list <- function(
     lambda_b_seq = c(0, 0.1, 0.2, 0.5),
     K = 5,
     final_n_restarts = 1,
-    restart_seed = NULL) {
+    restart_seed = NULL,
+    optimizer_control = list()) {
   out <- list()
   comparison_methods <- setdiff(methods, "MEMM")
   
@@ -1039,7 +1126,8 @@ build_all_method_matrix_list <- function(
       lambda_b_seq = lambda_b_seq,
       K = K,
       final_n_restarts = final_n_restarts,
-      restart_seed = restart_seed
+      restart_seed = restart_seed,
+      optimizer_control = optimizer_control
     )
     out <- c(list(MEMM = tcrossprod(memm_fit$a, memm_fit$b)), out)
   }
@@ -1119,7 +1207,8 @@ run_method_table_replications <- function(
     proxy_aggregation = c("l2", "l1"),
     truth_mode = c("legacy_mediator_only", "outer_active"),
     seed = NULL,
-    verbose = TRUE) {
+    verbose = TRUE,
+    optimizer_control = list()) {
   pathway <- match.arg(pathway)
   x_dist <- match.arg(x_dist)
   m_noise_dist <- match.arg(m_noise_dist)
@@ -1165,7 +1254,8 @@ run_method_table_replications <- function(
       lambda_b_seq = lambda_b_seq,
       K = K,
       final_n_restarts = final_n_restarts,
-      restart_seed = rep_restart_seed
+      restart_seed = rep_restart_seed,
+      optimizer_control = optimizer_control
     )
     
     res_i <- evaluate_method_matrices(
@@ -1216,7 +1306,8 @@ run_table12_summaries <- function(
     proxy_aggregation = "l2",
     truth_mode = "legacy_mediator_only",
     seed = NULL,
-    verbose = TRUE) {
+    verbose = TRUE,
+    optimizer_control = list()) {
   design <- build_table12_design(
     pathways = pathways,
     size_grid = size_grid,
@@ -1268,7 +1359,8 @@ run_table12_summaries <- function(
       proxy_aggregation = proxy_aggregation,
       truth_mode = truth_mode,
       seed = scenario_seed,
-      verbose = FALSE
+      verbose = FALSE,
+      optimizer_control = optimizer_control
     )
     res_i$pathway <- scenario_i$pathway
     res_i$scenario_id <- scenario_i$scenario_id
@@ -1318,7 +1410,8 @@ run_simulation_with_cv <- function(n_runs = 10,
                                    final_n_restarts = 1,
                                    restart_seed = NULL,
                                    seed = NULL,
-                                   verbose = TRUE) {
+                                   verbose = TRUE,
+    optimizer_control = list()) {
   pathway <- match.arg(pathway)
   x_dist <- match.arg(x_dist)
   m_noise_dist <- match.arg(m_noise_dist)
@@ -1364,7 +1457,8 @@ run_simulation_with_cv <- function(n_runs = 10,
     cv_result <- cv_select_lambda(
       X, M, Y, lambda_n,
       lambda_a_seq, lambda_b_seq,
-      K = K
+      K = K,
+      optimizer_control = optimizer_control
     )
     
     run_restart_seed <- if (is.null(restart_seed)) NULL else restart_seed + run - 1L
@@ -1377,23 +1471,15 @@ run_simulation_with_cv <- function(n_runs = 10,
       n_restarts = final_n_restarts,
       max_iter = 50,
       tol = 1e-3,
-      restart_seed = run_restart_seed
+      restart_seed = run_restart_seed,
+      optimizer_control = optimizer_control
     )
     a_hat <- model$a
     b_hat <- model$b
     
-    ## Summarize final model
-    x_agg <- as.vector(X %*% a_hat)
-    z_agg <- as.vector(M %*% b_hat)
-    fit <- lm(Y ~ x_agg + z_agg)
-    coef_vals <- coef(fit)
-    gamma_hat <- as.numeric(coef_vals["x_agg"])
-    eta_hat <- as.numeric(coef_vals["z_agg"])
-    alpha_hat <- as.numeric(crossprod(x_agg, z_agg))
-    denom <- alpha_hat * eta_hat + gamma_hat
-    MP_hat <- if (abs(denom) < 1e-8) 0 else (alpha_hat * eta_hat / denom)
-    MP_hat <- max(0, min(1, MP_hat))
-    
+    ## Same signed, unclipped profiled MP as Eq. (4).
+    MP_hat <- model$profile$MP
+
     direction_a <- compute_direction_metrics(a_hat, data$true_a)
     direction_b <- compute_direction_metrics(b_hat, data$true_b)
     
@@ -1541,4 +1627,5 @@ run_scenario_grid <- function(design_grid, common_args,
 }
 
     
+
 
